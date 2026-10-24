@@ -78,6 +78,9 @@ dialog textarea{min-height:60px;resize:vertical}
         <option value="sold">売却済</option>
       </select>
     </div>
+    <div class="tools">
+      <button class="btn primary" id="mailBtn" type="button">📧 メールから取り込み</button>
+    </div>
     <div class="card" id="list"></div>
   </section>
 
@@ -104,6 +107,19 @@ dialog textarea{min-height:60px;resize:vertical}
   <button data-view="v-list" type="button">商品一覧</button>
   <button data-view="v-set" type="button">設定</button>
 </nav>
+
+<dialog id="mailDlg">
+  <div style="padding:16px">
+    <h2>メールから取り込み</h2>
+    <p class="note" style="margin-top:0">メルカリの「取引が完了しました」「購入されました」メールの本文を貼り付けてください。複数件まとめて貼ってもOKです。商品IDが同じ商品は更新、新しい商品は「売却済」として追加します。</p>
+    <textarea id="mailText" style="min-height:200px" placeholder="メール本文をここに貼り付け"></textarea>
+    <p class="note" id="mailResult"></p>
+    <div class="actions">
+      <button class="btn" id="mailCancel" type="button">閉じる</button>
+      <button class="btn primary" id="mailRun" type="button">取り込む</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="dlg">
   <form id="itemForm">
@@ -397,6 +413,53 @@ document.getElementById('reset').addEventListener('click', () => {
   db.items = [];
   save();
   renderAll();
+});
+
+// メルカリの通知メール本文から 商品ID・商品名・商品価格 を抜き出す
+function parseMercariMail(text) {
+  const re = /商品ID\s*[:：]\s*(m\d+)[\s\S]*?商品名\s*[:：]\s*([\s\S]*?)\s*商品価格\s*[:：]\s*([\d,]+)\s*円/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(text))) {
+    out.push({ externalId: m[1], name: m[2].replace(/\s+/g, ' ').trim(), soldPrice: Number(m[3].replace(/,/g, '')) });
+  }
+  return out;
+}
+
+const mailDlg = document.getElementById('mailDlg');
+document.getElementById('mailBtn').addEventListener('click', () => {
+  document.getElementById('mailText').value = '';
+  document.getElementById('mailResult').textContent = '';
+  mailDlg.showModal();
+});
+document.getElementById('mailCancel').addEventListener('click', () => mailDlg.close());
+document.getElementById('mailRun').addEventListener('click', () => {
+  const found = parseMercariMail(document.getElementById('mailText').value);
+  if (!found.length) {
+    document.getElementById('mailResult').textContent = 'メルカリの商品情報が見つかりませんでした。メール本文をそのまま貼り付けてください。';
+    return;
+  }
+  let added = 0, updated = 0;
+  for (const f of found) {
+    const ex = db.items.find(i => i.externalId === f.externalId);
+    if (ex) {
+      Object.assign(ex, { name: f.name, market: 'mercari', status: 'sold', soldPrice: f.soldPrice });
+      if (!ex.soldDate) ex.soldDate = todayStr();
+      updated++;
+    } else {
+      db.items.push({
+        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+        createdAt: Date.now(), externalId: f.externalId, name: f.name, market: 'mercari', status: 'sold',
+        cost: null, price: f.soldPrice, soldPrice: f.soldPrice, shipping: null,
+        soldDate: todayStr(), source: '', memo: 'メール取り込み',
+      });
+      added++;
+    }
+  }
+  save();
+  mailDlg.close();
+  renderAll();
+  alert(`${added}件追加、${updated}件更新しました。\n仕入れ値と送料は商品をタップして入力してください（未入力の間は利益が実際より多く表示されます）。`);
 });
 
 fillMarkets();
