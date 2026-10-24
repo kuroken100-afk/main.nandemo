@@ -92,6 +92,16 @@ dialog textarea{min-height:60px;resize:vertical}
       <p class="note">初期値は目安です。実際の手数料率は各サービスの最新情報で確認して変更してください。</p>
     </div>
     <div class="card">
+      <strong>自動取得（Googleスプレッドシート連携）</strong>
+      <p class="note" style="margin-top:6px">Gmailのメルカリ通知を30分ごとにスプレッドシートへ集めておき、アプリを開くと自動で取り込みます。セットアップ手順は gas/Code.gs の冒頭を参照してください。</p>
+      <input id="syncUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec?token=…" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font-size:15px">
+      <div class="actions" style="justify-content:flex-start;margin-top:8px">
+        <button class="btn primary" id="syncBtn" type="button">今すぐ同期</button>
+      </div>
+      <p class="note" id="syncStatus"></p>
+      <p class="note">URLにはトークンが含まれるため、他人に共有しないでください。</p>
+    </div>
+    <div class="card">
       <strong>データ</strong>
       <div class="actions" style="justify-content:flex-start;margin-top:8px">
         <button class="btn" id="csv" type="button">CSVで書き出す</button>
@@ -439,31 +449,64 @@ document.getElementById('mailRun').addEventListener('click', () => {
     document.getElementById('mailResult').textContent = 'メルカリの商品情報が見つかりませんでした。メール本文をそのまま貼り付けてください。';
     return;
   }
+  const r = upsertMercari(found);
+  save();
+  mailDlg.close();
+  renderAll();
+  alert(`${r.added}件追加、${r.updated}件更新しました。\n仕入れ値と送料は商品をタップして入力してください（未入力の間は利益が実際より多く表示されます）。`);
+});
+
+// メルカリの売却情報（商品ID・商品名・売価・売却日）を商品一覧に反映する
+function upsertMercari(list) {
   let added = 0, updated = 0;
-  for (const f of found) {
+  for (const f of list) {
     const ex = db.items.find(i => i.externalId === f.externalId);
     if (ex) {
       Object.assign(ex, { name: f.name, market: 'mercari', status: 'sold', soldPrice: f.soldPrice });
-      if (!ex.soldDate) ex.soldDate = todayStr();
+      if (!ex.soldDate) ex.soldDate = f.soldDate || todayStr();
       updated++;
     } else {
       db.items.push({
         id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
         createdAt: Date.now(), externalId: f.externalId, name: f.name, market: 'mercari', status: 'sold',
         cost: null, price: f.soldPrice, soldPrice: f.soldPrice, shipping: null,
-        soldDate: todayStr(), source: '', memo: 'メール取り込み',
+        soldDate: f.soldDate || todayStr(), source: '', memo: 'メール取り込み',
       });
       added++;
     }
   }
-  save();
-  mailDlg.close();
-  renderAll();
-  alert(`${added}件追加、${updated}件更新しました。\n仕入れ値と送料は商品をタップして入力してください（未入力の間は利益が実際より多く表示されます）。`);
-});
+  return { added, updated };
+}
+
+// 自動取得: Apps Script（gas/Code.gs）のURLから売却データを取得して反映する
+const SYNC_KEY = 'seller-note-sync';
+const getSyncUrl = () => { try { return localStorage.getItem(SYNC_KEY) || ''; } catch (e) { return ''; } };
+
+async function syncNow(silent) {
+  const st = document.getElementById('syncStatus');
+  const url = document.getElementById('syncUrl').value.trim();
+  if (!url) { st.textContent = 'URLを入力してください'; return; }
+  try { localStorage.setItem(SYNC_KEY, url); } catch (e) { /* 保存できなくても同期は行う */ }
+  st.textContent = '同期中…';
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!Array.isArray(data.items)) throw new Error(data.error || '応答が不正です');
+    const r = upsertMercari(data.items);
+    save();
+    renderAll();
+    st.textContent = `同期完了（新規 ${r.added}件・更新 ${r.updated}件）${new Date().toLocaleTimeString('ja-JP')}`;
+  } catch (e) {
+    st.textContent = silent ? '' : '同期に失敗しました: ' + e.message;
+  }
+}
+
+document.getElementById('syncUrl').value = getSyncUrl();
+document.getElementById('syncBtn').addEventListener('click', () => syncNow(false));
 
 fillMarkets();
 renderAll();
+if (getSyncUrl()) syncNow(true);
 </script>
 </body>
 </html>
